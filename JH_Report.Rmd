@@ -1,0 +1,299 @@
+---
+title: "Applied Machine Learning Project (Coursera)"
+author: "Akijitsu"
+date: "27 December 2015"
+output: html_document
+---
+
+##Introduction
+
+This report is the required homework for the 'Applied Machine Learning' course by Johns Hopkins University on Coursera
+For full background to the exercise pelase see:
+
+https://class.coursera.org/predmachlearn-035/human_grading
+
+In brief this report examines 'quantified self' data from activity monitors (such as fitbit) and aims to build an accurate prediction model. The model will predict if a particular exercise has been performed correctly or not based on the data fed back from the device.  
+
+Lets get started by installing required packages and reading in the data: 
+(Note: Some code in this report is commented out and is included for grading & reproducability)
+
+```{r echo=FALSE}
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("ggvis")
+#library(ggvis)
+#install.packages('caret')
+library('caret')
+
+#data available from course website
+pml_train <- read.csv("~/Downloads/pml-training.csv")
+```
+
+
+A quick look at the training data
+```{r}
+#str(pml_train)
+#summary(pml_train)
+```
+
+
+##Data Cleaning and Pre Processing
+Several columns have only NA values - remove these predictors from training set: 
+Select only columns with more than 50% of values that are not NA
+
+```{r}
+new_train = pml_train[, colSums(is.na(pml_train)) <  nrow(pml_train) * 0.5]
+```
+We now have reduced set to 93 predictors.
+Let's now remove predictors that have low variance using the nearZeroVar function 
+
+```{r}
+low_variance = nearZeroVar(new_train)
+if(length(low_variance) != 0) {
+  new_train = new_train[, -low_variance]}
+```
+We now have reduced set to 59 variables
+```{r}
+str(new_train)
+```
+
+Remove row name variable X and Timestamp variable
+```{r}
+new_train = new_train %>% select(-X)
+# We now have reduced set to 58 variables (including target variabe classe)
+
+# remove cvtd_timestamp - causing problems at submission stage
+new_train = new_train %>% select(-cvtd_timestamp)
+```
+
+
+
+##Split new_train into train and test sets 
+I will use a random 70:30 split - note the target variable is 'classe'
+```{r}
+library(caTools)
+set.seed(100)
+split = sample.split(new_train$classe, SplitRatio = 0.7)
+Train = subset(new_train, split==TRUE)
+Test = subset(new_train, split==FALSE)
+```
+
+##CART (Classification & Regrression Trees) Model
+Install rpart library to build CART (Classification & Regrression Tree )
+```{r}
+#install.packages("rpart")
+library(rpart)
+#install.packages("rpart.plot")
+library(rpart.plot)
+```
+
+### CART model 
+Minbucket selection is a tuning parameter for the model. It defines the minimum number of observations in each node. 
+```{r}
+cart_tree = rpart(classe ~. , method="class", data = Train, control=rpart.control(minbucket=500))
+prp(cart_tree)
+```
+
+The CART model has several splits and may not be easily interpretable. However it may still have good predictive power. 
+Let's test the model and see how good its predictive power is. 
+
+###Test CART model
+
+```{r}
+predict_cart = predict(cart_tree, newdata = Test, type = "class")
+table(Test$classe, predict_cart)
+
+# Group A: accuracy = 1503/(1503+32+139+0+0) = 89.78%
+# Group B: accuracy = 625/(250+625+259+5+0) = 54.87%
+# Group C: accuracy = 908/(5+89+908+11+14) = 88.41%
+# Group D: accuracy = 599/(2+45+164+599+155) = 62.07%
+# Group E: accuracy = 905/(0+0+46+131+905) = 83.36% ```
+```
+
+####Check full results using confusion matrix
+```{r}
+confusionMatrix(predict_cart, Test$classe)
+
+```
+65.7% accuracy - Promising but there is room for improvement. We have not yet tuned the model parameters. One effective approach is to use Cross Validation. 
+
+##Tuning the model by cross validation
+Lets improve the model by using Cross Validation. 
+Install cross-validation packages
+```{r}
+#install.packages("e1071")
+library(e1071)
+```
+
+#### K-Fold Cross-Validation
+
+Define k-fold cross-validation experiment - CP (complexity parameter) value should be between 0 and 1
+Choose number of k folds = 10
+
+```{r}
+fitControl = trainControl( method = "cv", number = 10 )
+```
+Define range of cp values to test, cp must be betwwen 0 and 1
+
+```{r}
+cartGrid = expand.grid( .cp = (1:5)*0.001) 
+```
+
+
+####Perform the cross validation
+```{r}
+train(classe ~., data = Train, method = "rpart", trControl = fitControl, tuneGrid = cartGrid )
+```
+
+Returns a 96.35% accuracy on the training set with cp value = 0.001.
+We will use this value of cp in the model for our test set evaluation. 
+
+### CART with Cross-Validation
+Create a new CART model that uses cross validation parameter (cp = 0.001) rather than minbucket
+```{r}
+cart_tree_CV = rpart(classe ~. , method="class", data = Train, control=rpart.control(cp = 0.001))
+```
+
+### Make predictions
+```{r}
+predict_cart_cv = predict(cart_tree_CV, newdata = Test, type = "class")
+table(Test$classe, predict_cart_cv)
+
+# Group A: accuracy = 1662/(1662+8+0+4+0) = 99.28% 
+# Group B: accuracy = 1101/(4+1101+34+0+0) = 96.66%
+# Group C: accuracy = 987/(0+16+987+14+0) = 97.05%
+# Group D: accuracy = 932/(0+1+21+932+11) = 96.58%
+# Group E: accuracy = 1053/(0+5+0+24+1053) = 97.32% ```
+```
+
+####Check full results using confusion matrix
+```{r}
+confusionMatrix(predict_cart_cv, Test$classe)
+```
+
+#####The prediction accuracy is 96.31%. 
+Using CART with Cross Validation yields very impressive results! 
+This is a significant improvement over the model without cross validation(65.7%)
+
+
+##Random Forests
+Lets try Random Forest to see if we can improve ccuracy further: 
+Install randomForest package
+```{r}
+#install.packages("randomForest")
+library(randomForest)
+```
+
+
+###Train model and make predictions
+```{r}
+train_forest = randomForest(classe ~., data = Train, ntree=20, nodesize=50 )
+predict_forest = predict(train_forest, newdata = Test)
+```
+
+####Check results
+```{r}
+table(Test$classe, predict_forest)
+
+# Group A: accuracy = 1671/(1671+3+0+0+0) = 99.82% 
+# Group B: accuracy = 1139/(0+1139+0+0+0) = 100%
+# Group C: accuracy = 1008/(0+8+1008+11+0) = 98.14%
+# Group D: accuracy = 951/(0+0+9+951+5) = 98.55%
+# Group E: accuracy = 1075/(0+0+0+7+1075) = 99.35% ```
+
+#check full results using confusion matrix
+```
+####Confusion Matrix: Accuracy & Out of Sample Error
+```{r, echo=FALSE}
+confusionMatrix(predict_forest, Test$classe)
+```
+####Test Set Accuracy
+Test set accuracy is 99.39% - This is very high (and quite rare) for a predictive model! 
+
+#### Out Of Sample Error
+Out of sample error = 100-99.39 = 0.61%
+
+One may make slight improvements to this model by tuning parameters 'ntree' and 'nodesize' but i'm happy with 99% for now. 
+
+Recall that the previous 'test set' was obtained by splitting the original training set 70:30.
+
+Let's try the random forest model again on some unseen data
+
+## Validation Set (Assignment Submission)
+Now let us try the model on the actual test set data provided for the exercise (in this example one could refer to it as the validation set)
+
+```{r}
+pml_test <- read.csv("~/Downloads/pml-testing.csv")
+```
+
+###Data Cleaning and Pre Processing
+
+Process the data as with the training set: 
+Let now remove predictors that have low variance using the nearZeroVar function 
+```{r}
+low_variance = nearZeroVar(pml_test)
+if(length(low_variance) != 0) {
+  new_test = pml_test[, -low_variance]}
+```
+We now have reduced set to 59 variables: Consistent with the training data used to build the random forest model
+```{r}
+# remove row name variable X 
+new_test = new_test %>% select(-X)
+# We now have reduced set to 58 variables (including target variabe classe)
+new_test = new_test %>% select(-problem_id)
+#remove timestamp variable - causing problems during submission
+new_test = new_test %>% select(-cvtd_timestamp)
+#str(new_test)
+```
+
+
+##Now Test Random Forest model
+```{r}
+predict_forest_val = predict(train_forest, newdata = new_test)
+```
+The model evaluation will take place on the coursera servers: Therefore we will simply submit the predictions in text format. 
+
+###Prepare results for submission 
+Only problem_id and classe variables required
+```{r}
+submission = new_test %>% mutate(classe = predict_forest_val)
+submission = submission %>% select(classe)
+View(submission)
+write.csv(submission, file = "machine_learnong_JH.csv", row.names = FALSE)
+```
+
+
+### Use JH provided code to split data into 20 text files
+```{r}
+answers = submission$classe
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
+
+
+#####Result: Full Marks! 20/20 Correct on Assignment.
+The model performed excellently on the Validation set. 
+
+
+## Conclusion
+
+The Random Forest Model has been shown to have > 99% predictive accuracy on unseen test set data. When applied to the validation set of 20 questions the classifier scored 100%. 
+
+Further work may include looking to investigate the reasons why our model is of such a high accuracy. The random forest model typically trades prediction accuracy for interpretability. Therefore it is not easy to state why the model is so accurate without further investigations. 
+
+Additional approaches to this problem may include using Principal Component Analaysis and Multicalss classification using logistic regression. This may aid in interpretability and in isolating which variables hold most predictive power.
+Furhtermore working with a domain expert would be useful in order to better understand how the data was collected and the experimental conditions under which it was generated. 
+
+
+
+
+
+
